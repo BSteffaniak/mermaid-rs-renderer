@@ -36,6 +36,10 @@ exclude = [
     "*.html",
 ]
 
+[[example]]
+name = "wasm_smoke"
+crate-type = ["cdylib"]
+
 [features]
 default = ["cli", "png"]
 # CLI support (adds clap dependency)
@@ -61,7 +65,7 @@ usvg = { version = "0.47.0", optional = true }
 lto = true
 codegen-units = 1
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.8"
 
 [[bench]]

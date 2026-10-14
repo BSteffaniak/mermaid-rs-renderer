@@ -91,6 +91,7 @@
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod config;
+mod diagnostic_clock;
 mod edge_geometry;
 pub mod error;
 pub mod ir;
@@ -98,6 +99,7 @@ pub mod layout;
 pub mod layout_dump;
 pub mod parser;
 pub mod render;
+pub use text_metrics::set_text_measurement_font;
 mod text_metrics;
 pub mod theme;
 pub(crate) mod unicode_width;
@@ -362,7 +364,7 @@ pub fn render_with_detailed_timing(
     input: &str,
     options: RenderOptions,
 ) -> anyhow::Result<RenderDetailedResult> {
-    use std::time::Instant;
+    use crate::diagnostic_clock::Instant;
 
     let t0 = Instant::now();
     let parsed = parse_mermaid(input)?;

@@ -1,8 +1,12 @@
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use fontdb::{Database, Family, Query, Stretch, Style, Weight};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::fs;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::hash::{Hash, Hasher};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::path::PathBuf;
 use std::sync::Mutex;
 use ttf_parser::{Face, GlyphId};
@@ -11,6 +15,28 @@ use crate::unicode_width::{Cluster, consume_cluster, is_cjk_wide_char};
 
 static TEXT_MEASURER: Lazy<Mutex<TextMeasurer>> = Lazy::new(|| Mutex::new(TextMeasurer::new()));
 const FONT_CACHE_VERSION: &str = "v2-font-family-case";
+
+/// Configure a caller-supplied face for process-wide text measurement.
+///
+/// Bypasses system-font discovery and disk caches. Applies to all requested
+/// families; use a matching SVG theme font. Does not embed font bytes in SVG.
+/// Configure before rendering: replacement affects other library users and
+/// clears measurement caches. Invalid input preserves the previous setting.
+///
+/// # Errors
+/// Returns an error for invalid font data/face index or a poisoned lock.
+pub fn set_text_measurement_font(data: Vec<u8>, face_index: u32) -> anyhow::Result<()> {
+    let parsed = Face::parse(&data, face_index)
+        .map_err(|error| anyhow::anyhow!("invalid measurement font: {error:?}"))?;
+    let units = parsed.units_per_em();
+    let font = FontFace::new(data, face_index, units);
+    let mut guard = TEXT_MEASURER
+        .lock()
+        .map_err(|_| anyhow::anyhow!("text measurement lock poisoned"))?;
+    guard.supplied_font = Some(font);
+    guard.cache.clear();
+    Ok(())
+}
 
 pub fn measure_text_width(text: &str, font_size: f32, font_family: &str) -> Option<f32> {
     if text.is_empty() || font_size <= 0.0 {
@@ -31,22 +57,32 @@ pub fn average_char_width(font_family: &str, font_size: f32) -> Option<f32> {
 }
 
 struct TextMeasurer {
+    supplied_font: Option<FontFace>,
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     db: Database,
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     loaded_system_fonts: bool,
     cache: HashMap<String, Option<FontFace>>,
 }
 
 impl TextMeasurer {
     fn new() -> Self {
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         let db = Database::new();
         Self {
+            supplied_font: None,
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             db,
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             loaded_system_fonts: false,
             cache: HashMap::new(),
         }
     }
 
     fn measure(&mut self, text: &str, font_size: f32, font_family: &str) -> Option<f32> {
+        if let Some(font) = self.supplied_font.as_mut() {
+            return font.measure_width(&text.replace('\t', "    "), font_size);
+        }
         let family_key = normalize_family_key(font_family);
         let face = if self.cache.contains_key(&family_key) {
             self.cache
@@ -63,6 +99,13 @@ impl TextMeasurer {
         face.measure_width(&normalized, font_size)
     }
 
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn load_face(&mut self, _font_family: &str) -> Option<FontFace> {
+        // Layout's existing fallback metrics need no filesystem or system fonts.
+        None
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     fn load_face(&mut self, font_family: &str) -> Option<FontFace> {
         let family_key = normalize_family_key(font_family);
         if let Some(face) = load_cached_face(&family_key) {
@@ -255,6 +298,7 @@ impl FontFace {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn canonical_family_name(db: &Database, raw: &str) -> Option<String> {
     db.faces()
         .flat_map(|face| face.families.iter().map(|(family, _)| family))
@@ -272,6 +316,7 @@ fn normalize_family_key(font_family: &str) -> String {
     format!("{FONT_CACHE_VERSION}:{family}")
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn cache_paths(family_key: &str) -> Option<(PathBuf, PathBuf)> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -285,6 +330,7 @@ fn cache_paths(family_key: &str) -> Option<(PathBuf, PathBuf)> {
     Some((font_path, meta_path))
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn load_cached_face(family_key: &str) -> Option<FontFace> {
     let (font_path, meta_path) = cache_paths(family_key)?;
     if !font_path.exists() || !meta_path.exists() {
@@ -331,6 +377,15 @@ mod tests {
             canonical_family_name(&db, "trebuchet ms").as_deref(),
             Some("Trebuchet MS")
         );
+    }
+
+    #[test]
+    fn invalid_supplied_font_preserves_existing_configuration() {
+        let mut guard = TEXT_MEASURER.lock().unwrap();
+        let before = guard.measure("unchanged", 14.0, "sans-serif");
+        drop(guard);
+        assert!(set_text_measurement_font(vec![0; 8], 0).is_err());
+        assert_eq!(measure_text_width("unchanged", 14.0, "sans-serif"), before);
     }
 
     #[test]
